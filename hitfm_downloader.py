@@ -11,6 +11,7 @@ from webdriver_manager.chrome import ChromeDriverManager  # 自动管理驱动
 
 # 其他
 from bs4 import BeautifulSoup
+import requests  # 提前导入，避免循环导入/重复导入
 
 # ================== 配置 ==================
 DEFAULT_CONFIG = {
@@ -121,6 +122,37 @@ def extract_programs_from_rendered_page(soup):
             seen.add(pid)
     return unique
 
+def download_audio(audio_url, filepath, title):
+    """封装下载逻辑，避免重复代码"""
+    if os.path.exists(filepath):
+        print(f"  ➡️ 已存在: {title} -> {os.path.basename(filepath)}")
+        return
+    
+    print(f"  📥 下载: {title} -> {os.path.basename(filepath)}")
+    try:
+        resp = requests.get(
+            audio_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.radio.cn/"
+            },
+            stream=True,
+            timeout=(10, 30)
+        )
+        print(f"  🌐 HTTP 状态码: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            with open(filepath, "wb") as f:
+                for chunk in resp.iter_content(8192):
+                    f.write(chunk)
+            print(f"  ✅ 成功: {os.path.basename(filepath)}")
+        else:
+            print(f"  ❌ 服务器返回: {resp.status_code}")
+            
+    except Exception as e:
+        print(f"  💥 下载失败: {e}")
+    time.sleep(0.5)
+
 def main():
     chrome_options = Options()
     chrome_options.add_argument("--no-sandbox")
@@ -132,14 +164,22 @@ def main():
     
     # 指定本地 chromedriver 路径
     driver_path = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
-    service = Service(executable_path=driver_path)
+    # 兼容：如果本地驱动不存在，自动下载
+    if not os.path.exists(driver_path):
+        driver_path = ChromeDriverManager().install()
     
+    service = Service(executable_path=driver_path)
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
     try:
         for date_str in get_date_range(START_DATE, END_DATE):
             print(f"\n📅 处理日期: {date_str}")
             formatted_date = date_str.replace("-", "/")
+            current_date = datetime.strptime(date_str, "%Y-%m-%d")
+            next_date = current_date + timedelta(days=1)
+            next_date_str = next_date.strftime("%Y-%m-%d")
+            formatted_next_date = next_date_str.replace("-", "/")
+
             page_url = (
                 f"https://www.radio.cn/pc-portal/sanji/passProgram.html"
                 f"?channel_name={CHANNEL_NAME}"
@@ -176,46 +216,27 @@ def main():
                 if id_type == 1:
                     # 新版ID下载链接
                     audio_url = f"https://ytrecordbroadcast.radio.cn/echo/2/{prog_id}.m4a?e=0&ps=1&r=3"
-                elif id_type == 2:
-                    # 旧版ID下载链接
-                    audio_url = f"https://ytcmsplayer.radio.cn/content/video/vod/{formatted_date}/{prog_id}.m4a"
-                else:
-                    print(f"  ❌ 无法识别 {title} 的ID类型，跳过下载")
-                    continue
-
-                filename = safe_filename(title) + ".m4a"
-                filepath = os.path.join(date_folder, filename)
-
-                if os.path.exists(filepath):
-                    print(f"  ➡️ 已存在: {title}")
-                    continue
-
-                print(f"  📥 下载: {title}")
-                try:
-                    import requests
-                    resp = requests.get(
-                        audio_url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                            "Referer": "https://www.radio.cn/"
-                        },
-                        stream=True,
-                        timeout=(10, 30)
-                    )
-                    print(f"  🌐 HTTP 状态码: {resp.status_code}")
+                    filename = safe_filename(title) + ".m4a"
+                    filepath = os.path.join(date_folder, filename)
+                    download_audio(audio_url, filepath, title)
                     
-                    if resp.status_code == 200:
-                        with open(filepath, "wb") as f:
-                            for chunk in resp.iter_content(8192):
-                                f.write(chunk)
-                        print(f"  ✅ 成功: {filename}")
-                    else:
-                        print(f"  ❌ 服务器返回: {resp.status_code}")
-                        
-                except Exception as e:
-                    print(f"  💥 下载失败: {e}")
-
-                time.sleep(0.5)
+                elif id_type == 2:
+                    # 旧版ID下载链接（当日+次日）
+                    # 1. 当日链接
+                    audio_url = f"https://ytcmsplayer.radio.cn/content/video/vod/{formatted_date}/{prog_id}.m4a"
+                    filename = safe_filename(title) + ".m4a"
+                    filepath = os.path.join(date_folder, filename)
+                    download_audio(audio_url, filepath, title)
+                    
+                    # 2. 次日链接
+                    next_date_audio_url = f"https://ytcmsplayer.radio.cn/content/video/vod/{formatted_next_date}/{prog_id}.m4a"
+                    filename = safe_filename(title) + ".m4a"
+                    filepath = os.path.join(date_folder, filename)
+                    download_audio(next_date_audio_url, filepath, title)
+                    
+                else:
+                    print(f"  ❌ 无法识别 {title} 的ID类型（ID: {prog_id}），跳过下载")
+                    continue
 
             # 下载完成后删除调试文件
             if os.path.exists(debug_file):
